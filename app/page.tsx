@@ -141,7 +141,6 @@ export default function ExpenseTracker() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
-  const [prefsLoaded, setPrefsLoaded] = useState(false);
 
   // ── Navigation ──
   const [view, setView] = useState<View>('dashboard');
@@ -165,30 +164,17 @@ export default function ExpenseTracker() {
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // ── Load wallet from localStorage ──
-  // Runs once. We gate the *save* effect behind prefsLoaded so it can never
-  // fire with default values before this has had a chance to populate state
-  // (previously both effects ran on first render, and depending on timing
-  // the save effect could stomp the just-loaded values with zeros).
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('cashflow_wallet');
-      if (saved) setWallet(JSON.parse(saved));
-    } catch {
-      // ignore malformed/missing storage
-    } finally {
-      setPrefsLoaded(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!prefsLoaded) return;
-    localStorage.setItem('cashflow_wallet', JSON.stringify(wallet));
-  }, [wallet, prefsLoaded]);
-
+  // ── Load everything (transactions, recurring, wallet) from the sheet ──
+  // Wallet balance now lives in the sheet's Wallet tab instead of
+  // localStorage. localStorage is scoped per browser origin (protocol +
+  // host + port), so the same app running on localhost:3000 one day and
+  // localhost:3001 or a deployed Vercel URL the next would each see an
+  // empty, zeroed-out wallet — the data wasn't actually lost, it was just
+  // sitting in a different origin's storage bucket. Keeping it in the
+  // sheet means the balance is the same everywhere, on any device.
   useEffect(() => {
     if (API_URL) {
-      fetchTransactions();
+      fetchAll();
     } else {
       setIsLoading(false);
       showToast('API URL not configured. Set NEXT_PUBLIC_SHEETS_API_URL in .env.local', 'error');
@@ -200,7 +186,7 @@ export default function ExpenseTracker() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  const fetchTransactions = async () => {
+  const fetchAll = async () => {
     if (!API_URL) {
       setIsLoading(false);
       showToast('API URL not configured. Please set NEXT_PUBLIC_SHEETS_API_URL.', 'error');
@@ -215,11 +201,52 @@ export default function ExpenseTracker() {
         .sort((a: Transaction, b: Transaction) => parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime());
       setTransactions(sorted);
       setRecurring(data.recurring || []);
+      if (data.wallet) {
+        setWallet({
+          cardBalance: toAmt(data.wallet.cardBalance),
+          cashBalance: toAmt(data.wallet.cashBalance),
+        });
+      }
     } catch (e) {
-      showToast('Failed to load transactions. Check your connection.', 'error');
+      showToast('Failed to load data. Check your connection.', 'error');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Pushes a new wallet balance to the sheet. Called after every wallet
+  // change so the sheet is always the source of truth — if this request
+  // fails, local state still reflects the change but a refresh will pull
+  // the last-saved sheet value, so we surface a toast on failure rather
+  // than failing silently.
+  const syncWallet = async (next: WalletState) => {
+    console.log('[syncWallet] called with', next, 'API_URL =', API_URL);
+    if (!API_URL) {
+      console.warn('[syncWallet] aborted: API_URL is empty');
+      return;
+    }
+    try {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        body: JSON.stringify({ _wallet: true, cardBalance: next.cardBalance, cashBalance: next.cashBalance }),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      });
+      console.log('[syncWallet] response status', res.status);
+    } catch (err) {
+      console.error('[syncWallet] fetch threw', err);
+      showToast('Wallet changed locally but failed to sync. Refresh may revert it.', 'error');
+    }
+  };
+
+  // Updates wallet state and immediately syncs the result to the sheet.
+  // Centralizing this (rather than calling setWallet + syncWallet
+  // separately at each call site) guarantees the two never drift apart.
+  const updateWallet = (updater: (w: WalletState) => WalletState) => {
+    setWallet(prev => {
+      const next = updater(prev);
+      syncWallet(next);
+      return next;
+    });
   };
 
   // ─── Recurring bills active as of today ──────────────────────────────────
@@ -328,7 +355,7 @@ export default function ExpenseTracker() {
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       });
       setTransactions(prev => [newTx, ...prev]);
-      setWallet(w => applyToWallet(w, { type: formType, amount: amt, paymentMethod }));
+      updateWallet(w => applyToWallet(w, { type: formType, amount: amt, paymentMethod }));
       resetForm();
       setShowForm(false);
       showToast('Transaction saved!', 'success');
@@ -370,7 +397,7 @@ export default function ExpenseTracker() {
       description: 'Card → Cash withdrawal',
       type: 'transfer',
     };
-    setWallet(w => applyToWallet(w, { type: 'transfer', amount: amt }));
+    updateWallet(w => applyToWallet(w, { type: 'transfer', amount: amt }));
     setTransactions(prev => [tx, ...prev]);
     if (API_URL) {
       try {
@@ -733,7 +760,7 @@ export default function ExpenseTracker() {
                         className="flex-1 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
                       />
                       <button
-                        onClick={() => { setWallet(w => ({ ...w, cardBalance: parseFloat(walletInput) || 0 })); setEditingWallet(null); }}
+                        onClick={() => { updateWallet(w => ({ ...w, cardBalance: parseFloat(walletInput) || 0 })); setEditingWallet(null); }}
                         className="px-4 py-2 bg-blue-600 rounded-xl text-sm font-bold text-white"
                       >
                         Save
@@ -772,7 +799,7 @@ export default function ExpenseTracker() {
                         className="flex-1 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
                       />
                       <button
-                        onClick={() => { setWallet(w => ({ ...w, cashBalance: parseFloat(walletInput) || 0 })); setEditingWallet(null); }}
+                        onClick={() => { updateWallet(w => ({ ...w, cashBalance: parseFloat(walletInput) || 0 })); setEditingWallet(null); }}
                         className="px-4 py-2 bg-green-600 rounded-xl text-sm font-bold text-white"
                       >
                         Save
