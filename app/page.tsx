@@ -84,12 +84,27 @@ const fmt = (n: number) =>
 
 const toAmt = (v: number | string) => (typeof v === 'string' ? parseFloat(v) : v) || 0;
 
-const getSalaryCycleStart = (date: Date = new Date()) => {
-  const d = new Date(date);
-  if (d.getDate() >= SALARY_DAY) {
-    return new Date(d.getFullYear(), d.getMonth(), SALARY_DAY);
-  }
-  return new Date(d.getFullYear(), d.getMonth() - 1, SALARY_DAY);
+// ── Timezone-safe date helpers ────────────────────────────────────────────────
+// "2026-06-10" parsed with new Date() becomes Jun 9 in UTC+5:30 — so we NEVER
+// pass ISO strings to the Date constructor. Always use this:
+const parseLocalDate = (s: string): Date => {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+
+// Today as local midnight — consistent with parseLocalDate for comparisons
+const localToday = (): Date => {
+  const n = new Date();
+  return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+};
+
+const toDateKey = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+const getSalaryCycleStart = (date: Date = localToday()): Date => {
+  if (date.getDate() >= SALARY_DAY)
+    return new Date(date.getFullYear(), date.getMonth(), SALARY_DAY);
+  return new Date(date.getFullYear(), date.getMonth() - 1, SALARY_DAY);
 };
 
 const getSalaryCycleEnd = (start: Date) => {
@@ -104,23 +119,22 @@ const getCycleLabel = (start: Date) => {
   return `${start.toLocaleDateString('en-LK', { month: 'short', day: 'numeric' })} – ${end.toLocaleDateString('en-LK', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 };
 
-const isInCycle = (dateStr: string, cycleStart: Date) => {
-  const d = new Date(dateStr);
-  const end = getSalaryCycleEnd(cycleStart);
-  return d >= cycleStart && d <= end;
+const isInCycle = (dateStr: string, cycleStart: Date): boolean => {
+  const d = parseLocalDate(dateStr);
+  return d >= cycleStart && d <= getSalaryCycleEnd(cycleStart);
 };
 
-const getDayLabel = (d: string) => {
-  const date = new Date(d);
-  const today = new Date();
-  const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
-  if (date.toDateString() === today.toDateString()) return 'Today';
-  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+const getDayLabel = (s: string): string => {
+  const date = parseLocalDate(s);
+  const today = localToday();
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (date.getTime() === today.getTime()) return 'Today';
+  if (date.getTime() === yesterday.getTime()) return 'Yesterday';
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 };
 
-const getMonthYear = (d: string) =>
-  new Date(d).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+const getMonthYear = (s: string): string =>
+  parseLocalDate(s).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 const CategoryBadge = ({ cat }: { cat: string }) => (
@@ -179,7 +193,7 @@ export default function ExpenseTracker() {
   // ── Form state ──
   const [showForm, setShowForm] = useState(false);
   const [formType, setFormType] = useState<TxType>('expense');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(toDateKey(localToday()));
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [description, setDescription] = useState('');
@@ -257,7 +271,7 @@ const fetchTransactions = async () => {
     const data = await res.json();
     const sorted = (data.transactions || [])
       .map((t: Transaction, i: number) => ({ ...t, id: t.id ?? String(i) }))
-      .sort((a: Transaction, b: Transaction) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      .sort((a: Transaction, b: Transaction) => parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime());
     setTransactions(sorted);
     setRecurring(data.recurring || []);
   } catch (e) {
@@ -311,7 +325,7 @@ const fetchTransactions = async () => {
   );
 
   const recurringActive = useMemo(() =>
-    recurring.filter(b => new Date(b.startDate) <= new Date()),
+    recurring.filter(b => parseLocalDate(b.startDate) <= localToday()),
     [recurring]
   );
 
@@ -329,7 +343,7 @@ const fetchTransactions = async () => {
 
   // ─── Daily pace projector ─────────────────────────────────────────────────
   const paceData = useMemo(() => {
-    const today = new Date();
+    const today = localToday();
     const daysElapsed = Math.max(1, Math.floor((today.getTime() - cycleStart.getTime()) / 86400000));
     const cycleEnd = getSalaryCycleEnd(cycleStart);
     const totalDays = Math.floor((cycleEnd.getTime() - cycleStart.getTime()) / 86400000);
@@ -367,9 +381,9 @@ const fetchTransactions = async () => {
       transactions.filter(t => t.type === 'expense' || !t.type).map(t => t.date)
     );
     let streak = 0;
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    while (!spendDays.has(d.toISOString().split('T')[0])) {
+    const d = localToday();
+    d.setDate(d.getDate() - 1); // start checking from yesterday
+    while (!spendDays.has(toDateKey(d))) {
       streak++;
       d.setDate(d.getDate() - 1);
       if (streak > 365) break;
@@ -406,7 +420,7 @@ const fetchTransactions = async () => {
   const biggestSpendDay = useMemo(() => {
     const byDay: Record<number, number> = {};
     transactions.filter(t => t.type === 'expense' || !t.type).forEach(t => {
-      const day = new Date(t.date).getDate();
+      const day = parseLocalDate(t.date).getDate();
       byDay[day] = (byDay[day] || 0) + toAmt(t.amount);
     });
     const sorted = Object.entries(byDay).sort((a, b) => b[1] - a[1]);
@@ -424,9 +438,10 @@ const fetchTransactions = async () => {
   const trendData = useMemo(() => {
     const months: { label: string; spend: number; income: number }[] = [];
     for (let i = 5; i >= 0; i--) {
-      const d = new Date();
+      const d = localToday();
       d.setMonth(d.getMonth() - i);
-      const key = getMonthYear(d.toISOString());
+      // Build key from local date, not ISO string
+      const key = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
       const monthTx = transactions.filter(t => getMonthYear(t.date) === key);
       months.push({
         label: d.toLocaleDateString('en-US', { month: 'short' }),
@@ -439,14 +454,14 @@ const fetchTransactions = async () => {
 
   // ─── Week over week ───────────────────────────────────────────────────────
   const weekData = useMemo(() => {
-    const thisWeekStart = new Date(); thisWeekStart.setDate(thisWeekStart.getDate() - 7);
-    const lastWeekStart = new Date(); lastWeekStart.setDate(lastWeekStart.getDate() - 14);
+    const thisWeekStart = localToday(); thisWeekStart.setDate(thisWeekStart.getDate() - 7);
+    const lastWeekStart = localToday(); lastWeekStart.setDate(lastWeekStart.getDate() - 14);
     const thisWeek = transactions.filter(t => {
-      const d = new Date(t.date);
+      const d = parseLocalDate(t.date);
       return (t.type === 'expense' || !t.type) && d >= thisWeekStart;
     }).reduce((s, t) => s + toAmt(t.amount), 0);
     const lastWeek = transactions.filter(t => {
-      const d = new Date(t.date);
+      const d = parseLocalDate(t.date);
       return (t.type === 'expense' || !t.type) && d >= lastWeekStart && d < thisWeekStart;
     }).reduce((s, t) => s + toAmt(t.amount), 0);
     return { thisWeek, lastWeek };
@@ -469,7 +484,7 @@ const fetchTransactions = async () => {
       groups[key].transactions.push(t);
     });
     return Object.entries(groups).sort(
-      (a, b) => new Date(b[1].transactions[0].date).getTime() - new Date(a[1].transactions[0].date).getTime()
+      (a, b) => parseLocalDate(b[1].transactions[0].date).getTime() - parseLocalDate(a[1].transactions[0].date).getTime()
     );
   }, [filtered]);
 
@@ -599,7 +614,7 @@ const fetchTransactions = async () => {
       total, myShare: myShareAmt,
       paidBy: splitForm.paidBy || 'Me',
       participants,
-      date: new Date().toISOString().split('T')[0],
+      date: toDateKey(localToday()),
       settled: false,
     };
     setSplits(prev => [newSplit, ...prev]);
@@ -1161,7 +1176,7 @@ onClick={(d) => {
                       const amt = parseFloat((document.getElementById('withdraw-amt') as HTMLInputElement)?.value || '0');
                       if (!amt) return;
                       setWallet(w => ({ ...w, cardBalance: w.cardBalance - amt, cashBalance: w.cashBalance + amt }));
-                      const tx: Transaction = { id: Date.now().toString(), date: new Date().toISOString().split('T')[0], amount: amt, category: 'Other', description: 'Cash Withdrawal', type: 'transfer' };
+                      const tx: Transaction = { id: Date.now().toString(), date: toDateKey(localToday()), amount: amt, category: 'Other', description: 'Cash Withdrawal', type: 'transfer' };
                       setTransactions(prev => [tx, ...prev]);
                       showToast(`Withdrawn ${fmt(amt)} to cash`, 'success');
                       (document.getElementById('withdraw-amt') as HTMLInputElement).value = '';
