@@ -220,14 +220,20 @@ export default function ExpenseTracker() {
   // the last-saved sheet value, so we surface a toast on failure rather
   // than failing silently.
   const syncWallet = async (next: WalletState) => {
-    if (!API_URL) return;
+    console.log('[syncWallet] called with', next, 'API_URL =', API_URL);
+    if (!API_URL) {
+      console.warn('[syncWallet] aborted: API_URL is empty');
+      return;
+    }
     try {
-      await fetch(API_URL, {
+      const res = await fetch(API_URL, {
         method: 'POST',
         body: JSON.stringify({ _wallet: true, cardBalance: next.cardBalance, cashBalance: next.cashBalance }),
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       });
-    } catch {
+      console.log('[syncWallet] response status', res.status);
+    } catch (err) {
+      console.error('[syncWallet] fetch threw', err);
       showToast('Wallet changed locally but failed to sync. Refresh may revert it.', 'error');
     }
   };
