@@ -1,25 +1,26 @@
-/* Your ExpenseTracker component hardcodes background: '#060810' on its
-   root div. That's the actual color your app shows. But globals.css
-   currently defaults --background to #ffffff (light) / #0a0a0a (dark) —
-   neither matches #060810, so there's a one-frame color mismatch on
-   load: white or #0a0a0a flashes, then snaps to #060810 once React
-   mounts. Fixing --background to match removes that flash entirely.
-
-   Replace your :root block with this: */
+@import "tailwindcss";
 
 :root {
-  --background: #060810;
-  --foreground: #ededed;
+  --background: #ffffff;
+  --foreground: #171717;
 }
 
-/* Your app is dark-only (ExpenseTracker never switches to a light
-   theme), so the dark-mode media query that re-defines --background
-   is now redundant — safe to delete it entirely:
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
 
-   @media (prefers-color-scheme: dark) {
-     :root { ... }
-   }
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
 
-   Everything else in your globals.css (the @theme inline block and
-   the body rule) stays exactly as-is — it already reads from
-   --background, so it'll pick this up automatically. */
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
