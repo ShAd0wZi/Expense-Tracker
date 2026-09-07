@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft, Plus, Search, Trash2, X, Repeat,
-  CreditCard, Banknote, ArrowRightLeft, Download,
+  CreditCard, Banknote, ArrowRightLeft, Download, PieChart
 } from 'lucide-react';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -18,7 +18,12 @@ const CATEGORY_COLORS: Record<string, string> = {
 // ─── Types ────────────────────────────────────────────────────────────────────
 type PaymentMethod = 'card' | 'cash';
 type TxType = 'expense' | 'income' | 'transfer';
-type View = 'dashboard' | 'wallets';
+type View = 'dashboard' | 'wallets' | 'budgets';
+
+interface Budget {
+  category: string;
+  limit: number | string;
+}
 
 interface Transaction {
   id?: string;
@@ -160,6 +165,11 @@ export default function ExpenseTracker() {
   const [editingWallet, setEditingWallet] = useState<'card' | 'cash' | null>(null);
   const [walletInput, setWalletInput] = useState('');
 
+  // ── Budgets ──
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [editingBudget, setEditingBudget] = useState<string | null>(null);
+  const [budgetInput, setBudgetInput] = useState('');
+
   // ── Search ──
   const [searchQuery, setSearchQuery] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -201,6 +211,7 @@ export default function ExpenseTracker() {
         .sort((a: Transaction, b: Transaction) => parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime());
       setTransactions(sorted);
       setRecurring(data.recurring || []);
+      setBudgets(data.budgets || []);
       if (data.wallet) {
         setWallet({
           cardBalance: toAmt(data.wallet.cardBalance),
@@ -211,6 +222,34 @@ export default function ExpenseTracker() {
       showToast('Failed to load data. Check your connection.', 'error');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Pushes a new wallet balance to the sheet. Called after every wallet
+  // change so the sheet is always the source of truth — if this request
+  // fails, local state still reflects the change but a refresh will pull
+  // the last-saved sheet value, so we surface a toast on failure rather
+  // than failing silently.
+  const syncBudget = async (category: string, limit: number) => {
+    if (!API_URL) return;
+
+    // Optimistic update
+    setBudgets(prev => {
+      const existing = prev.find(b => b.category === category);
+      if (existing) {
+        return prev.map(b => b.category === category ? { ...b, limit } : b);
+      }
+      return [...prev, { category, limit }];
+    });
+
+    try {
+      await fetch(API_URL, {
+        method: 'POST',
+        body: JSON.stringify({ _budget: true, category, limit }),
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      });
+    } catch (e) {
+      showToast('Failed to sync budget. Refresh may revert it.', 'error');
     }
   };
 
@@ -433,6 +472,7 @@ export default function ExpenseTracker() {
   const navItems: { id: View; label: string; icon: any }[] = [
     { id: 'dashboard', label: 'Home', icon: ArrowRightLeft },
     { id: 'wallets', label: 'Wallets', icon: CreditCard },
+    { id: 'budgets', label: 'Budgets', icon: PieChart },
   ];
 
   return (
@@ -724,6 +764,83 @@ export default function ExpenseTracker() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* ══ BUDGETS VIEW ══ */}
+            {view === 'budgets' && (
+              <div className="mt-4 space-y-4">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">Budgets (This Month)</p>
+                <div className="space-y-3">
+                  {CATEGORIES.map(cat => {
+                    const limitVal = toAmt(budgets.find(b => b.category === cat)?.limit || 0);
+                    const spentVal = thisMonthData.transactions
+                      .filter(t => t.category === cat && t.type !== 'income' && t.type !== 'transfer')
+                      .reduce((s, t) => s + toAmt(t.amount), 0);
+                    const progress = limitVal > 0 ? Math.min((spentVal / limitVal) * 100, 100) : 0;
+                    const isOver = spentVal > limitVal && limitVal > 0;
+
+                    return (
+                      <div key={cat} style={{ background: '#0d1220', border: '1px solid #1a2030' }} className="rounded-2xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span style={{ background: CATEGORY_COLORS[cat] || '#64748b' }} className="w-2 h-2 rounded-full flex-shrink-0" />
+                            <span className="font-semibold text-slate-200">{cat}</span>
+                          </div>
+                          <button
+                            onClick={() => { setEditingBudget(cat); setBudgetInput(String(limitVal)); }}
+                            className="text-xs text-blue-400 hover:text-white"
+                          >
+                            Edit
+                          </button>
+                        </div>
+
+                        {editingBudget === cat ? (
+                          <div className="flex gap-2 mt-2">
+                            <input
+                              type="number"
+                              value={budgetInput}
+                              onChange={e => setBudgetInput(e.target.value)}
+                              autoFocus
+                              style={{ background: '#060810', border: '1px solid #3b82f6' }}
+                              className="flex-1 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+                            />
+                            <button
+                              onClick={() => { syncBudget(cat, parseFloat(budgetInput) || 0); setEditingBudget(null); }}
+                              className="px-4 py-2 bg-blue-600 rounded-xl text-sm font-bold text-white"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex items-end justify-between mb-2">
+                              <span className="text-lg font-bold text-white">{fmt(spentVal)}</span>
+                              <span className="text-xs text-slate-500">of {limitVal > 0 ? fmt(limitVal) : 'No limit'}</span>
+                            </div>
+
+                            {limitVal > 0 && (
+                              <div className="h-1.5 w-full bg-[#1a2030] rounded-full overflow-hidden">
+                                <div
+                                  className="h-full rounded-full transition-all duration-500"
+                                  style={{
+                                    width: `${progress}%`,
+                                    background: isOver ? '#ef4444' : CATEGORY_COLORS[cat] || '#3b82f6'
+                                  }}
+                                />
+                              </div>
+                            )}
+                            {isOver && (
+                              <p className="text-[10px] text-red-400 mt-1.5 font-medium tracking-wide">
+                                OVER BUDGET
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
