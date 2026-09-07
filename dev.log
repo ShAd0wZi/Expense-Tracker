@@ -1,0 +1,11 @@
+
+> my-cashflow@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.2:3000
+✓ Ready in 554ms
+
+○ Compiling / ...
+ GET / 200 in 5.1s (next.js: 4.7s, application-code: 338ms)
